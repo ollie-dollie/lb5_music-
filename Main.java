@@ -1,89 +1,81 @@
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLConnection;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 public class Main {
 
+    private static final String MUSIC_URL =
+            "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+
     public static void main(String[] args) {
 
-        String urlString = "https://cdn.uwupad.me/109782.mp3";
-        String filePath = "C:\\Users\\user\\Music\\song.mp3";
+        // папка загрузки
+        Path savePath = Paths.get(
+                System.getProperty("user.home"), "Downloads", "soundhelix_song1.mp3");
 
-        Thread downloadThread = new Thread(() -> {
+        System.out.println("Загрузка начата. Файл будет сохранён: " + savePath);
 
-            System.out.println("Начинается скачивание...");
-            System.out.println("Путь сохранения: " + filePath);
-
+        // скачивание выполняется в отдельном потоке
+        CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
             try {
-                long durationMs = downloadAudioFile(filePath, urlString);
-
-                System.out.printf(
-                        "Скачивание успешно завершено за %d мс%n",
-                        durationMs
-                );
-
-            } catch (IOException ex) {
-                System.err.println("Ошибка при скачивании: " + ex.getMessage());
+                fetchMp3(MUSIC_URL, savePath);
+            } catch (IOException e) {
+                throw new RuntimeException(e.getMessage(), e);
             }
         });
 
-        downloadThread.start();
-
         try {
-            downloadThread.join();
-        } catch (InterruptedException ex) {
-            System.err.println("Скачивание было прервано");
-            Thread.currentThread().interrupt();
+            task.join(); // ждём завершения
+            System.out.println("\nГотово! Файл сохранён.");
+        } catch (CompletionException e) {
+            System.err.println("\nОшибка при скачивании: " + e.getCause().getMessage());
         }
     }
 
-    /**
-     * Скачивает аудиофайл по указанной ссылке
-     * и сохраняет его по заданному пути.
-     *
-     * @param filePath путь сохранения файла
-     * @param urlString ссылка на аудиофайл
-     * @return время скачивания в миллисекундах
-     * @throws IOException если произошла ошибка при скачивании
-     */
-    public static long downloadAudioFile(String filePath, String urlString)
-            throws IOException {
+    // скачиваем файл по ссылке и сохраняем по указанному пути.
+    public static void fetchMp3(String link, Path target) throws IOException {
 
-        long startTime = System.currentTimeMillis();
+        // создаём папку, если её нет
+        Files.createDirectories(target.getParent());
 
-        File targetFile = new File(filePath);
-        File parentDir = targetFile.getParentFile();
+        HttpURLConnection conn = (HttpURLConnection) new URL(link).openConnection();
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+        conn.setConnectTimeout(10_000);
+        conn.setReadTimeout(15_000);
 
-        // создаем папку, если ее нет
-        if (parentDir != null && !parentDir.exists()) {
-            if (!parentDir.mkdirs()) {
-                throw new IOException("Не удалось создать папку: " + parentDir);
-            }
+        // проверяем, что сервер ответил успешно
+        int code = conn.getResponseCode();
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw new IOException("Сервер вернул код " + code);
         }
 
-        // устанавливаем соединение
-        URL url = new URL(urlString);
-        URLConnection connection = url.openConnection();
-        connection.setConnectTimeout(10000);
-        connection.setReadTimeout(15000);
+        long totalSize = conn.getContentLengthLong(); // размер файла в байтах
 
-        // скачиваем файл и автоматически закрываем потоки
-        try (BufferedInputStream in = new BufferedInputStream(connection.getInputStream());
-             FileOutputStream fout = new FileOutputStream(targetFile)) {
+        try (InputStream in = conn.getInputStream();
+             OutputStream out = Files.newOutputStream(target)) {
 
-            byte[] data = new byte[8192];
-            int count;
+            byte[] buffer = new byte[16 * 1024];
+            long downloaded = 0;
+            int read;
 
-            while ((count = in.read(data)) != -1) {
-                fout.write(data, 0, count);
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+                downloaded += read;
+
+                if (totalSize > 0) {
+                    int percent = (int) (downloaded * 100 / totalSize);
+                    System.out.print("\rСкачано: " + percent + "%");
+                }
             }
+        } finally {
+            conn.disconnect();
         }
-
-        long endTime = System.currentTimeMillis();
-
-        return endTime - startTime;
     }
 }
